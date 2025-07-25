@@ -61,8 +61,7 @@ Gemini 배치 API를 활용하여 소설과 같은 대용량 텍스트 파일을
 *   `source_language`: 원본 언어 코드 (e.g., "en")
 *   `target_language`: 대상 언어 코드 (e.g., "ko")
 *   `gemini_api_key`: Google AI Studio API 키.
-*   `gemini_api_key`: Google AI Studio API 키.
-*   `model_name`: 사용할 Gemini 모델 이름 (e.g., "gemini-1.5-pro")
+*   `model_name`: 사용할 Gemini 모델 이름 (e.g., "gemini-2.5-pro")
 *   `system_instruction`: 번역 요청 시 모델에 전달할 시스템 프롬프트 (역할, 원칙 등 정의)
 *   `chunk_size`: 파일을 분할할 때의 최대 글자 수.
 *   `temperature`: 모델 응답의 창의성 조절 (높을수록 ��양, 낮을수록 결정적). (0.0 ~ 2.0)
