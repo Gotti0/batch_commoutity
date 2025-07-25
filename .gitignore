@@ -206,3 +206,4 @@ jetpack.jpg
 batch_multimodal_requests.jsonl
 *.jsonl
 *.txt
+config.json

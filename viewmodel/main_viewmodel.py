@@ -152,10 +152,9 @@ class MainViewModel(QObject):
         try:
             jobs_from_api = self.gemini_api.list_batch_jobs()
             
-            # --- Start Debugging ---
-            # The result from the SDK is an iterator. Convert its .page attribute to a list.
-            jobs_list = list(jobs_from_api.page)
-            logger.info(f"API returned {len(jobs_list)} jobs from the current page. Type: {type(jobs_from_api)}")
+            # The result from the SDK is now a direct list.
+            jobs_list = jobs_from_api
+            logger.info(f"API returned {len(jobs_list)} jobs. Type: {type(jobs_from_api)}")
             if len(jobs_list) > 0:
                 # Log details for each job at DEBUG level
                 logger.debug("--- Fetched Batch Jobs ---")
