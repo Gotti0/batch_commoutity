@@ -1,0 +1,7 @@
+{
+    "source_file": "C:/Users/Hyunwoo_Room/Downloads/Utility/batch_commoutity/japanese_novel_sample.txt",
+    "results_file": "C:/Users/Hyunwoo_Room/Downloads/Utility/batch_commoutity/japanese_novel_sample_translated.txt",
+    "model_id": "gemini-2.5-flash",
+    "job_name": "batches/1l0of7s1yan7pg96eczrm38fj4kj0yekw6z3",
+    "status": "SUCCEEDED"
+}

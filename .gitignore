@@ -202,3 +202,7 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/windows,python
 NTL_chapter1.txt
 batch_requests.jsonl
+jetpack.jpg
+batch_multimodal_requests.jsonl
+*.jsonl
+*.txt

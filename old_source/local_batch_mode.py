@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 # --- 로깅 설정 ---
 log_file_path = 'batch_mode.log'
 # 스크립트 실행 시 로그 파일 초기화
-with open(log_file_path, 'w'):
+with open(log_file_path, 'w', encoding='utf-8'):
     pass
 
 logging.basicConfig(
