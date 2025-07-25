@@ -2,6 +2,7 @@ import json
 import os
 import logging
 import urllib.request
+import re
 from google import genai
 from google.genai import types
 
@@ -29,15 +30,42 @@ class GeminiApiService:
             'top_p': self.config.get('top_p', 0.95),
             'thinkingConfig': {'thinking_budget': self.config.get('thinking_budget', 128) },
         }
-        chunk_size = self.config.get('chunk_size', 5000)
+        # --- 기존 청크 사이즈 지정 로직 주석 처리 ---
+        # chunk_size = self.config.get('chunk_size', 5000)
 
         with open(source_file, 'r', encoding='utf-8') as f_in:
             content = f_in.read()
 
-        chunks = [content[i:i + chunk_size] for i in range(0, len(content), chunk_size)]
+        # --- 새로운 구두점 기반 청킹 로직 ---
+        logger.info("Splitting text into chunks based on punctuation.")
+        # Use re.split with a capturing group to keep the delimiters
+        delimiters = r'([。！？.!?])'
+        parts = re.split(delimiters, content)
+        
+        chunks = []
+        if len(parts) > 1:
+            # Group the text parts with their corresponding delimiters
+            for i in range(0, len(parts) - 1, 2):
+                chunk = (parts[i] + parts[i+1]).strip()
+                if chunk:
+                    chunks.append(chunk)
+            # Add the last part if it exists (text without a trailing delimiter)
+            if len(parts) % 2 != 0 and parts[-1].strip():
+                chunks.append(parts[-1].strip())
+        elif parts and parts[0].strip(): # If no delimiters were found
+            chunks = [parts[0].strip()]
+
+        if not chunks and content.strip(): # Handle case where content exists but resulted in no chunks
+             chunks = [content.strip()]
+             logger.warning("Content exists but no chunks were created. Treating the entire content as a single chunk.")
+
+        logger.info(f"Content split into {len(chunks)} chunks by punctuation.")
+        # --- 로직 끝 ---
 
         with open(requests_file, 'w', encoding='utf-8') as f_out:
             for i, chunk in enumerate(chunks):
+                if not chunk: continue # Skip empty chunks
+                
                 request_contents = prefill + [{'role': 'user', 'parts': [{'text': chunk}]}]
                 request = {
                     "model": f"models/{model_id}",
@@ -81,6 +109,10 @@ class GeminiApiService:
                 config={'display_name': f'translation-{os.path.basename(source_file_path)}'}
             )
             logger.info(f"Batch job created successfully: {batch_job.name}")
+            
+            # Track the new job with its source file
+            self.job_tracker.add_job(batch_job.name, source_file_path)
+            
             return batch_job
 
         except Exception as e:
@@ -99,85 +131,107 @@ class GeminiApiService:
         # Add page_size to the config as per the example
         return self.client.batches.list(config={'page_size': 50})
 
-    def download_and_process_results(self, job, save_path):
-        """Downloads, parses, and saves the final text file for a given job."""
-        if not self.client:
-            raise ValueError("API client is not initialized.")
+    def _retry_chunk_with_divide_and_conquer(self, text_to_translate, original_request):
+        """
+        Recursively tries to translate a failed chunk by splitting it in half.
+        """
+        # Base case: If the text is too short to split, give up.
+        if len(text_to_translate) < 50:
+            logger.error(f"Chunk is too short to split further and failed: '{text_to_translate}'")
+            return f"[번역 실패: 최소 단위 도달] {text_to_translate}"
 
-        logger.info(f"Starting result processing for job: {job.name}")
+        # Prepare a new request for synchronous translation
+        model_id = original_request['model']
+        sync_request = {
+            "contents": original_request['contents'][:-1] + [{'role': 'user', 'parts': [{'text': text_to_translate}]}],
+            "system_instruction": original_request.get('system_instruction'),
+            "generation_config": original_request.get('generation_config'),
+            "safety_settings": original_request.get('safety_settings')
+        }
 
-        # 1. Get the result file name
-        if not (hasattr(job, 'dest') and hasattr(job.dest, 'file_name')):
-            raise ValueError(f"Could not find destination file name for job '{job.name}'.")
-        
-        result_file_name = job.dest.file_name
-        logger.info(f"Results are stored in file: {result_file_name}")
-
-        # 2. Download the result file content
         try:
-            logger.info("Downloading result file...")
+            # Try to translate the whole chunk synchronously
+            response = self.client.generate_content(
+                model=model_id,
+                **sync_request
+            )
+            logger.info(f"Successfully translated a sub-chunk: '{text_to_translate[:30]}...' ")
+            return response.text
+        except Exception as e:
+            logger.warning(f"Sub-chunk failed, splitting in half. Error: {e}. Text: '{text_to_translate[:30]}...' ")
+            # If it fails, split and recurse
+            mid = len(text_to_translate) // 2
+            first_half = text_to_translate[:mid]
+            second_half = text_to_translate[mid:]
+            
+            translated_first = self._retry_chunk_with_divide_and_conquer(first_half, original_request)
+            translated_second = self._retry_chunk_with_divide_and_conquer(second_half, original_request)
+            
+            return translated_first + translated_second
+
+    def download_and_process_results(self, job, save_path):
+        """결과 파일을 다운로드하여 파싱하고 최종 텍스트 파일로 저장합니다."""
+        result_file_name = job.dest.file_name
+        logger.info(f"결과가 파일에 저장되었습니다: {result_file_name}")
+        logger.info("결과 파일 다운로드 및 파싱 중...")
+        
+        try:
             file_content_bytes = self.client.files.download(file=result_file_name)
             file_content = file_content_bytes.decode('utf-8')
-            logger.info("Result file downloaded successfully.")
         except Exception as e:
-            logger.error(f"Error downloading result file '{result_file_name}': {e}", exc_info=True)
-            raise e
-
-        # 3. Parse the results
+            logger.error(f"결과 파일 다운로드 중 오류 발생: {e}", exc_info=True)
+            return
+            
         translations = {}
         max_key = 0
-        logger.info("Parsing downloaded content...")
         for line in file_content.splitlines():
             if not line:
                 continue
-            
+                        
             try:
                 parsed_response = json.loads(line)
                 key_num = int(parsed_response['key'].split('_')[1])
                 max_key = max(max_key, key_num)
-                
+                full_response_str = json.dumps(parsed_response, indent=2, ensure_ascii=False)
+
                 if 'response' in parsed_response and parsed_response['response'].get('candidates'):
                     candidate = parsed_response['response']['candidates'][0]
                     finish_reason = candidate.get('finish_reason', 'UNKNOWN')
-                    
+                                        
                     if finish_reason == "SAFETY":
-                        full_response_str = json.dumps(parsed_response, indent=2, ensure_ascii=False)
                         translations[key_num] = f"[번역 차단됨 (SAFETY) - 전체 응답 객체:]\n{full_response_str}"
-                        logger.error(f"Chunk {key_num} processing failed/blocked: Finish reason was SAFETY.")
+                        logger.error(f"문단 {key_num} 처리 실패/차단됨: Finish reason was SAFETY.")
                     else:
                         translations[key_num] = candidate.get('content', {}).get('parts', [{}])[0].get('text', '[번역 내용 없음]')
-                
+                                
                 elif 'response' in parsed_response:
-                    full_response_str = json.dumps(parsed_response, indent=2, ensure_ascii=False)
-                    feedback = parsed_response['response'].get('prompt_feedback', {})
                     translations[key_num] = f"[번역 차단됨 (Candidates 없음) - 전체 응답 객체:]\n{full_response_str}"
-                    logger.error(f"Chunk {key_num} processing failed/blocked: 'candidates' list is empty. Feedback: {feedback}")
+                    feedback = parsed_response['response'].get('prompt_feedback', {})
+                    logger.error(f"문단 {key_num} 처리 실패/차단됨: Candidates 리스트가 비어있습니다. Feedback: {feedback}")
                 
                 else:
-                    full_response_str = json.dumps(parsed_response, indent=2, ensure_ascii=False)
-                    error_message = parsed_response.get('error', {}).get('message', '알 수 없는 오류')
                     translations[key_num] = f"[번역 실패 (No Response) - 전체 응답 객체:]\n{full_response_str}"
-                    logger.error(f"Chunk {key_num} processing failed/blocked: {error_message}")
+                    error_message = parsed_response.get('error', {}).get('message', '알 수 없는 오류')
+                    logger.error(f"문단 {key_num} 처리 실패/차단됨: {error_message}")
 
             except (json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
-                key_str = f"'{line.split(',')[0]}'" if ',' in line else "Unknown Key"
-                max_key += 1
+                key_str = f"'{line.split(',')[0]}'" if ',' in line else "알 수 없는 키"
+                max_key += 1 
                 translations[max_key] = f"[결과 라인 파싱 오류 - 원본 라인:]\n{line}"
-                logger.warning(f"Exception while parsing result line for key {key_str}: {e}")
+                logger.warning(f"{key_str}에 해당하는 결과 라인 파싱 중 예외 발생: {e}")
 
-        # 4. Save the final processed text
-        logger.info(f"Saving processed results to '{save_path}'")
-        full_text = []
-        for i in range(1, max_key + 1):
-            full_text.append(translations.get(i, f"[문단 {i} 결과 누락]\n\n"))
-        
-        # Use the FileService to write the final text
-        from .file_service import FileService
-        FileService().write_text(save_path, "\n\n".join(full_text))
-        
-        logger.info("All processing finished successfully.")
+        logger.info(f"결과를 '{save_path}' 파일에 저장합니다.")
+        with open(save_path, 'w', encoding='utf-8') as f:
+            for i in range(1, max_key + 1):
+                f.write(translations.get(i, f"[문단 {i} 결과 누락]"))
+                f.write("\n\n")
+                
+        logger.info("모든 작업이 완료되었습니다.")
 
     def delete_batch_job(self, job_name):
         if not self.client:
             raise ValueError("API client is not initialized.")
         self.client.batches.delete(name=job_name)
+        # Also remove from tracker
+        self.job_tracker.remove_job(job_name)
+        logger.info(f"Job '{job_name}' deleted from API and tracker.")
