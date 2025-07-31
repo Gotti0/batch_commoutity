@@ -108,7 +108,7 @@ class GeminiApiService:
         if not self.client:
             raise ValueError("API client is not initialized. Check your API key.")
 
-        model_id = self.config.get('model_name', 'gemini-1.5-pro')
+        model_id = self.config.get('model_name', 'gemini-2.5-flash')
         requests_file = self._prepare_requests(source_file_path, model_id)
 
         try:
