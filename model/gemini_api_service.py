@@ -19,6 +19,49 @@ class GeminiApiService:
         if api_key and api_key != "YOUR_GEMINI_API_KEY":
             self.client = genai.Client(api_key=api_key)
 
+    def _split_text_into_chunks(self, text, max_chunk_size):
+        """
+        줄바꿈을 존중하면서 텍스트를 지정된 최대 크기의 청크로 분할합니다.
+        한 줄이 최대 크기를 초과하면 강제로 분할합니다.
+        """
+        chunks = []
+        current_chunk_lines = []
+        current_chunk_size = 0
+        
+        lines = text.splitlines(keepends=True)
+
+        for line in lines:
+            line_len = len(line)
+
+            # 한 줄이 max_chunk_size보다 큰 경우 강제 분할
+            if line_len > max_chunk_size:
+                # 현재까지의 청크를 먼저 추가
+                if current_chunk_lines:
+                    chunks.append("".join(current_chunk_lines))
+                    current_chunk_lines = []
+                    current_chunk_size = 0
+                
+                # 긴 라인을 max_chunk_size에 맞춰 분할
+                for i in range(0, line_len, max_chunk_size):
+                    chunks.append(line[i:i + max_chunk_size])
+                continue
+
+            # 이 줄을 추가하면 청크가 너무 커지는 경우, 현재 청크를 완료하고 새 청크 시작
+            if current_chunk_size + line_len > max_chunk_size and current_chunk_lines:
+                chunks.append("".join(current_chunk_lines))
+                current_chunk_lines = [line]
+                current_chunk_size = line_len
+            # 그렇지 않으면 현재 청크에 줄 추가
+            else:
+                current_chunk_lines.append(line)
+                current_chunk_size += line_len
+
+        # 마지막 남은 청크 추가
+        if current_chunk_lines:
+            chunks.append("".join(current_chunk_lines))
+            
+        return chunks
+
     def _prepare_requests(self, source_file, model_id):
         """ConfigManager의 설정을 사용하여 요청 파일을 생성합니다."""
         requests_file = "temp_requests.jsonl"
@@ -30,37 +73,14 @@ class GeminiApiService:
             'top_p': self.config.get('top_p', 0.95),
             'thinkingConfig': {'thinking_budget': self.config.get('thinking_budget', 128) },
         }
-        # --- 기존 청크 사이즈 지정 로직 주석 처리 ---
-        # chunk_size = self.config.get('chunk_size', 5000)
+        
+        max_chunk_size = self.config.get('chunk_size', 6000)
 
         with open(source_file, 'r', encoding='utf-8') as f_in:
             content = f_in.read()
 
-        # --- 새로운 구두점 기반 청킹 로직 ---
-        logger.info("Splitting text into chunks based on punctuation.")
-        # Use re.split with a capturing group to keep the delimiters
-        delimiters = r'([。！？.!?])'
-        parts = re.split(delimiters, content)
-        
-        chunks = []
-        if len(parts) > 1:
-            # Group the text parts with their corresponding delimiters
-            for i in range(0, len(parts) - 1, 2):
-                chunk = (parts[i] + parts[i+1]).strip()
-                if chunk:
-                    chunks.append(chunk)
-            # Add the last part if it exists (text without a trailing delimiter)
-            if len(parts) % 2 != 0 and parts[-1].strip():
-                chunks.append(parts[-1].strip())
-        elif parts and parts[0].strip(): # If no delimiters were found
-            chunks = [parts[0].strip()]
-
-        if not chunks and content.strip(): # Handle case where content exists but resulted in no chunks
-             chunks = [content.strip()]
-             logger.warning("Content exists but no chunks were created. Treating the entire content as a single chunk.")
-
-        logger.info(f"Content split into {len(chunks)} chunks by punctuation.")
-        # --- 로직 끝 ---
+        chunks = self._split_text_into_chunks(content, max_chunk_size)
+        logger.info(f"Content split into {len(chunks)} chunks with max size {max_chunk_size}, respecting newlines.")
 
         with open(requests_file, 'w', encoding='utf-8') as f_out:
             for i, chunk in enumerate(chunks):
